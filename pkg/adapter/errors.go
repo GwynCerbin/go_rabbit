@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright © 2024–2026 Alexander Demin
+
 package adapter
 
 // ConnClosedError is returned when operations are attempted on a closed connection.

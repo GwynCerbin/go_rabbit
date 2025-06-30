@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright © 2024–2026 Alexander Demin
+
 package infra
 
 import "github.com/GwynCerbin/go_rabbit/pkg/broker"
