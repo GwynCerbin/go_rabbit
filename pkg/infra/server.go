@@ -6,12 +6,17 @@ package infra
 import (
 	"context"
 	"fmt"
+	"log"
 	"runtime"
 	"sync"
 
 	"github.com/GwynCerbin/go_rabbit/pkg/broker"
-	"go.uber.org/zap"
 )
+
+// LoggerFunc is a pluggable callback for error reporting.
+// Users can inject any logger (zap, logrus, zerolog, etc.)
+// by calling listener.SetLogger(customLogger).
+type LoggerFunc func(error)
 
 // Listener encapsulates common parameters of a message‑queue subscriber.
 //   - consumer: an object that implements the broker.Consumer interface.
@@ -20,8 +25,9 @@ import (
 // Listener itself does not process messages; it acts as a factory that
 // creates an Instance where the real work happens.
 type Listener struct {
-	consumer broker.Consumer
-	gos      int
+	consumer   broker.Consumer
+	gos        int
+	loggerFunc LoggerFunc
 }
 
 // NewListener constructs a Listener with a default parallelism level of 1.
@@ -45,6 +51,12 @@ func (l *Listener) SetConcurrency(n int) error {
 	return nil
 }
 
+// SetLogger overrides the default stdlib logger.
+// Pass nil to restore logging to the standard library’s log.Print.
+func (l *Listener) SetLogger(logger LoggerFunc) {
+	l.loggerFunc = logger
+}
+
 // Instance is a running listener created from Listener.
 //   - workChan: buffered channel through which the dispatcher feeds
 //     anonymous handler functions to the workers.
@@ -53,11 +65,12 @@ func (l *Listener) SetConcurrency(n int) error {
 //   - router:   map routingKey → handler function.
 //   - consumer: same consumer object shared with the parent Listener.
 type Instance struct {
-	workChan chan func()
-	wg       sync.WaitGroup
-	gos      int
-	router   Router
-	consumer broker.Consumer
+	workChan   chan func()
+	wg         sync.WaitGroup
+	gos        int
+	router     Router
+	consumer   broker.Consumer
+	loggerFunc LoggerFunc
 }
 
 // Init takes a Router snapshot and returns a ready‑to‑run Instance.
@@ -65,11 +78,20 @@ type Instance struct {
 // a larger buffer is rarely needed. To start with another router,
 // create a new Instance instead of mutating the old one.
 func (l *Listener) Init(router Router) *Instance {
+	var logger LoggerFunc = func(err error) {
+		log.Print(err)
+	}
+
+	if l.loggerFunc != nil {
+		logger = l.loggerFunc
+	}
+
 	return &Instance{
-		workChan: make(chan func(), 1),
-		gos:      l.gos,
-		router:   router,
-		consumer: l.consumer,
+		workChan:   make(chan func(), 1),
+		gos:        l.gos,
+		router:     router,
+		consumer:   l.consumer,
+		loggerFunc: logger,
 	}
 }
 
@@ -91,6 +113,8 @@ func (l *Instance) ListenAndServe() error {
 	l.router = router
 
 	for range l.gos {
+		l.wg.Add(1)
+
 		go runner(l.workChan, &l.wg)
 	}
 
@@ -102,10 +126,10 @@ func (l *Instance) ListenAndServe() error {
 
 		val, ok := l.router[msg.RoutingKey()]
 		if !ok {
-			zap.L().Debug("no handler for message", zap.String("routing_key", msg.RoutingKey()))
+			l.loggerFunc(fmt.Errorf("%w, routing key: %s", UnroutedMessage{}, msg.RoutingKey()))
 
 			if err = msg.Reject(); err != nil {
-				zap.L().Error("reject unrouted message", zap.Error(err), zap.String("routing key", msg.RoutingKey()))
+				l.loggerFunc(fmt.Errorf("reject unrouted message: %w", err))
 			}
 
 			continue
@@ -132,7 +156,7 @@ func (l *Instance) Shutdown(ctx context.Context) error {
 // finish, and finally returns the closed channel so that receives unblock.
 func (l *Instance) stop() <-chan func() {
 	if err := l.consumer.Close(); err != nil {
-		zap.L().Error("close consumer", zap.Error(err))
+		l.loggerFunc(fmt.Errorf("%w: %w", ConsumerCloseError{}, err))
 	}
 
 	close(l.workChan)
@@ -141,11 +165,8 @@ func (l *Instance) stop() <-chan func() {
 	return l.workChan
 }
 
-// runner is the worker body. It reads tasks from workChan and executes them.
-// When the channel closes, it signals completion via WaitGroup
+// runner executes tasks from workChan and signals completion via WaitGroup.
 func runner(workChan chan func(), wg *sync.WaitGroup) {
-	wg.Add(1)
-
 	for work := range workChan {
 		work()
 	}
