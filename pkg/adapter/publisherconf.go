@@ -77,6 +77,8 @@ func (p *ConfirmerPublisher) Publish(ctx context.Context, data []byte) error {
 			if err := p.reconnectInit(val, ok); err != nil && p.con.logging {
 				log.Printf("reconnect init: %v", err)
 			}
+		case <-ctx.Done():
+			return ctx.Err()
 		case <-timer.C:
 			conf, err := p.rabChan.PublishWithDeferredConfirmWithContext(setPublisherConfig(ctx, p.cfg, data))
 			if err != nil {

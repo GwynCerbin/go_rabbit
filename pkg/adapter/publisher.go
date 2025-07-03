@@ -62,6 +62,8 @@ func (p *Publisher) Publish(ctx context.Context, data []byte) error {
 			if err := p.reconnectInit(val, ok); err != nil && p.con.logging {
 				log.Printf("reconnect init: %v", err)
 			}
+		case <-ctx.Done():
+			return ctx.Err()
 		default:
 			if err := p.rabChan.PublishWithContext(setPublisherConfig(ctx, p.cfg, data)); err != nil {
 				if errors.Is(err, amqp091.ErrClosed) {
