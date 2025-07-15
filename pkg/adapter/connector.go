@@ -6,6 +6,7 @@ package adapter
 import (
 	"fmt"
 	"log"
+	"math/bits"
 	"net/url"
 	"sync"
 	"time"
@@ -15,8 +16,17 @@ import (
 	"github.com/rabbitmq/amqp091-go"
 )
 
-// Con encapsulates a RabbitMQ connection with automatic reconnection logic.
-// It manages the underlying AMQP connection, reconnection routines, and consumer/publisher lifecycle.
+// Con manages a RabbitMQ AMQP091 connection with automatic reconnection.
+// It holds the active connection, target URI, client configuration, and coordinates
+// reconnection and shutdown across consumers and publishers:
+//   - connection: active AMQP091 connection
+//   - url: broker URI for dialing
+//   - cfg: AMQP091 client configuration
+//   - stop: channel signaling the reconnection loop to exit
+//   - cons: WaitGroup tracking active consumers and publishers for graceful shutdown
+//   - logging: flag to enable verbose log output
+//   - maxReconnectTime: maximum delay for exponential backoff on reconnect
+//   - mute: mutex protecting reconnection setup
 type Con struct {
 	// connection holds the active AMQP connection.
 	connection *amqp091.Connection
@@ -24,10 +34,6 @@ type Con struct {
 	url *url.URL
 	// stop signals the reconnection loop to exit.
 	stop chan struct{}
-	// once ensures reconnection is triggered only once per connection loss.
-	once *sync.Once
-	// wgRecon waits for the reconnection routine to finish before proceeding.
-	wgRecon sync.WaitGroup
 	// cfg stores the AMQP client configuration.
 	cfg amqp091.Config
 	// cons tracks active consumers to allow graceful shutdown.
@@ -35,13 +41,19 @@ type Con struct {
 	// logging toggles verbose log output for debugging.
 	logging bool
 	// maxReconnectTime caps the exponential backoff delay in seconds.
-	maxReconnectTime int64
+	maxReconnectTime time.Duration
+	// mute serializes access during reconnection setup.
+	mute sync.RWMutex
 }
 
 // Dial establishes an AMQP connection using the provided client configuration.
 // It returns a Con instance ready to declare exchanges, queues, and create publishers/consumers.
 func Dial(cfg *Client) (*Con, error) {
-	const stdMaxTime = 32 * time.Second
+	if cfg == nil {
+		return nil, ConConfEmptyError{}
+	}
+
+	const stdMaxTime time.Duration = 0x3_ffff_ffff
 
 	var (
 		clientCfg = amqp091.Config{
@@ -52,15 +64,21 @@ func Dial(cfg *Client) (*Con, error) {
 			Properties: cfg.Properties,
 			Heartbeat:  cfg.TcpHeartBeat,
 		}
-		maxTime = int64(cfg.MaxReconnectTime.Seconds())
+		maxTime = stdMaxTime
 		uri     = &url.URL{
 			Scheme: "amqp",
 			Host:   cfg.Host,
 		}
 	)
 
-	if maxTime == 0 {
-		maxTime = int64(stdMaxTime.Seconds())
+	if cfg.MaxReconnectTime != 0 {
+		var value uint64
+
+		value = ^uint64(0) << (63 - bits.LeadingZeros64(uint64(cfg.MaxReconnectTime)))
+		maxTime = time.Duration(^value)
+		if uint64(maxTime-cfg.MaxReconnectTime) > uint64(cfg.MaxReconnectTime-time.Duration(^(value<<1))) {
+			maxTime = time.Duration(^(value << 1))
+		}
 	}
 
 	con, err := amqp091.DialConfig(uri.String(), clientCfg)
@@ -72,9 +90,8 @@ func Dial(cfg *Client) (*Con, error) {
 		connection:       con,
 		url:              uri,
 		cfg:              clientCfg,
-		stop:             make(chan struct{}),
+		stop:             make(chan struct{}, 1),
 		maxReconnectTime: maxTime,
-		once:             new(sync.Once),
 		logging:          cfg.Logging,
 	}, nil
 }
@@ -82,37 +99,41 @@ func Dial(cfg *Client) (*Con, error) {
 // reconnect triggers a one-time reconnection sequence upon connection loss.
 // It ensures multiple errors in quick succession do not spawn multiple loops.
 func (c *Con) reconnect(err error) {
-	c.once.Do(func() {
-		c.wgRecon.Add(1)
-
+	if c.mute.TryLock() {
 		if c.logging {
-			log.Printf("rabbit connection lost: %v", err)
+			log.Printf("rabbit reconnect lost: %v", err)
 		}
-
 		c.reconnectLoop()
-		c.wgRecon.Done()
-	})
-	c.wgRecon.Wait()
+		c.mute.Unlock()
+	}
 }
 
 // ReconnectLoop attempts to re-establish the AMQP connection using exponential backoff.
 // It doubles the wait time after each failed attempt, capped by maxReconnectTime.
 // The loop exits when stop is closed or a new connection is successfully made.
 func (c *Con) reconnectLoop() {
-	for waitTime, attempt, maxTime := int64(1), 1, c.maxReconnectTime; true; waitTime, attempt = waitTime<<1, attempt+1 {
-		if waitTime > maxTime {
-			waitTime = maxTime
-		}
+	const firstDelay time.Duration = 0x1_FFFF_FFF // ~1.07 seconds
+
+	var (
+		timer   = time.NewTimer(0)
+		maxTime = c.maxReconnectTime
+	)
+
+	defer timer.Stop()
+
+	for waitTime, attempt := firstDelay, 1; true; waitTime, attempt = maxTime&(waitTime<<1|1), attempt+1 {
 		select {
 		case <-c.stop:
 			return
-		case <-time.After(time.Duration(waitTime) * time.Second):
+		case <-timer.C:
 			if c.logging {
 				log.Printf("rabbit reconnect attempt %d", attempt)
 			}
 
 			con, err := amqp091.DialConfig(c.url.String(), c.cfg)
 			if err != nil {
+				timer.Reset(waitTime)
+
 				continue
 			}
 
@@ -121,8 +142,6 @@ func (c *Con) reconnectLoop() {
 				log.Print("rabbit reconnect success")
 			}
 
-			c.once = new(sync.Once)
-
 			return
 		}
 	}
@@ -130,7 +149,9 @@ func (c *Con) reconnectLoop() {
 
 // DeclareExchange opens a channel, declares an exchange, and closes the channel.
 func (c *Con) DeclareExchange(cfg *ExchangeDeclare) error {
+	c.mute.RLock()
 	ch, err := c.connection.Channel()
+	c.mute.RUnlock()
 	if err != nil {
 		return fmt.Errorf("create channel: %w", err)
 	}
@@ -150,7 +171,9 @@ func (c *Con) DeclareExchange(cfg *ExchangeDeclare) error {
 
 // QueueDeclareAndBind declares a queue and optionally binds it to an exchange.
 func (c *Con) QueueDeclareAndBind(cfg *QueueDeclareAndBind) error {
+	c.mute.RLock()
 	ch, err := c.connection.Channel()
+	c.mute.RUnlock()
 	if err != nil {
 		return fmt.Errorf("create channel: %w", err)
 	}
@@ -179,7 +202,9 @@ func (c *Con) QueueDeclareAndBind(cfg *QueueDeclareAndBind) error {
 
 // DeleteExchange removes an existing exchange by name.
 func (c *Con) DeleteExchange(name string) error {
+	c.mute.RLock()
 	ch, err := c.connection.Channel()
+	c.mute.RUnlock()
 	if err != nil {
 		return fmt.Errorf("create channel: %w", err)
 	}
@@ -199,7 +224,9 @@ func (c *Con) DeleteExchange(name string) error {
 
 // DeleteQueue removes an existing queue by name.
 func (c *Con) DeleteQueue(name string) error {
+	c.mute.RLock()
 	ch, err := c.connection.Channel()
+	c.mute.RUnlock()
 	if err != nil {
 		return fmt.Errorf("create channel: %w", err)
 	}
@@ -232,7 +259,7 @@ func (c *Con) CreatePublisher(cfg *PublisherConfig) (broker.Publisher, error) {
 		return nil, PublisherConfEmptyError{}
 	}
 
-	return newPublisher(c, c.createNotifyChan(), *cfg)
+	return newPublisher(c, *cfg)
 }
 
 // CreatePublisherWithConfirmation returns a broker.Publisher that supports confirmation acknowledgments.

@@ -36,7 +36,9 @@ type Consumer struct {
 
 // newConsumer initializes a Consumer: opens a channel, starts consuming, and returns the instance.
 func newConsumer(c *Con, notifyCh chan *amqp091.Error, cfg ConsumerConfig) (*Consumer, error) {
+	c.mute.RLock()
 	rabbitChan, err := c.connection.Channel()
+	c.mute.RUnlock()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create channel: %w", err)
 	}
@@ -90,6 +92,8 @@ func (c *Consumer) Consume() (broker.Message, error) {
 		}
 	}
 
+	c.jobs.Wait()
+
 	return nil, ConsumerClosedError{}
 }
 
@@ -100,12 +104,15 @@ func (c *Consumer) reconnectInit(amqpErr *amqp091.Error, isValid bool) error {
 	}
 
 	c.con.reconnect(amqpErr)
+
+	c.con.mute.RLock()
 	c.notifyChan = c.con.createNotifyChan()
 
 	rabbitChan, err := c.con.connection.Channel()
 	if err != nil {
 		return fmt.Errorf("create consumer channel: %w", err)
 	}
+	c.con.mute.RUnlock()
 
 	msgCh, err := rabbitChan.Consume(setConsumerConfig(c.cfg))
 	if err != nil {

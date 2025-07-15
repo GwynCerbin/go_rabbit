@@ -27,6 +27,7 @@ func TestConsumerExample(t *testing.T) {
 		Host:     arg[0],
 		Username: arg[1],
 		Password: arg[2],
+		Logging:  true,
 	})
 	if err != nil {
 		t.Errorf("failed to connect to rabbit: %v", err)
@@ -60,8 +61,8 @@ func TestConsumerExample(t *testing.T) {
 			}
 		}()
 		<-stopper
-		if err := con.Close(); err != nil {
-			log.Printf(err.Error())
+		if err = con.Close(); err != nil {
+			log.Print(err.Error())
 		}
 	})
 }

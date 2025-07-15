@@ -5,6 +5,7 @@ package adapter
 
 import (
 	"sync"
+	"sync/atomic"
 
 	"github.com/rabbitmq/amqp091-go"
 )
@@ -15,7 +16,7 @@ type Message struct {
 	// deliver holds the original AMQP delivery metadata and payload.
 	deliver amqp091.Delivery
 	// Once prevents multiple Done calls on the WaitGroup.
-	sync.Once
+	completed atomic.Bool
 	// wg tracks the number of in-flight messages for graceful shutdown.
 	wg *sync.WaitGroup
 }
@@ -45,39 +46,44 @@ func (m *Message) Body() []byte {
 	return m.deliver.Body
 }
 
-// Ack acknowledges successful processing of the message.
-// It signals the broker that the message can be removed from the queue.
-// The WaitGroup Done is called exactly once.
+// Ack acknowledges successful processing of the message by the broker
+// and decrements the WaitGroup counter exactly once. It returns any error
+// from the underlying AMQP delivery acknowledgment.
 func (m *Message) Ack() error {
-	defer func() {
-		m.Do(func() {
-			m.wg.Done()
-		})
-	}()
+	if m.completed.CompareAndSwap(false, true) {
+		err := m.deliver.Ack(false)
 
-	return m.deliver.Ack(false)
+		m.wg.Done()
+
+		return err
+	}
+	return nil
 }
 
-// Nack negatively acknowledges the message, optionally requeuing it.
-// It signals that processing failed. The WaitGroup Done is called exactly once.
+// Nack negatively acknowledges the message exactly once, with requeue.
+// It decrements the WaitGroup counter and returns any error from the
+// underlying AMQP negative acknowledgment.
 func (m *Message) Nack() error {
-	defer func() {
-		m.Do(func() {
-			m.wg.Done()
-		})
-	}()
+	if m.completed.CompareAndSwap(false, true) {
+		err := m.deliver.Nack(false, true)
 
-	return m.deliver.Nack(false, true)
+		m.wg.Done()
+
+		return err
+	}
+	return nil
 }
 
-// Reject rejects the message without multiple negative acknowledgments support.
-// It optionally requeues the message. The WaitGroup Done is called exactly once.
+// Reject rejects the message exactly once without support for multiple-message
+// negative acknowledgments, optionally requeuing it. It decrements the
+// WaitGroup counter and returns any error from the underlying AMQP reject.
 func (m *Message) Reject() error {
-	defer func() {
-		m.Do(func() {
-			m.wg.Done()
-		})
-	}()
+	if m.completed.CompareAndSwap(false, true) {
+		err := m.deliver.Reject(false)
 
-	return m.deliver.Reject(false)
+		m.wg.Done()
+
+		return err
+	}
+	return nil
 }

@@ -6,6 +6,8 @@ package adapter
 // ConnClosedError is returned when operations are attempted on a closed connection.
 type ConnClosedError struct{}
 
+type ConConfEmptyError struct{}
+
 // PublisherConfEmptyError indicates that a nil or empty publisher configuration
 // was provided when creating a new publisher.
 type PublisherConfEmptyError struct{}
@@ -24,6 +26,10 @@ type ConsumerClosedError struct{}
 // It indicates the client explicitly closed the connection.
 func (e ConnClosedError) Error() string {
 	return "connection closed by client"
+}
+
+func (e ConConfEmptyError) Error() string {
+	return "empty rabbitMQ config passed"
 }
 
 // Error implements the error interface for ConsumerConfEmptyError.
