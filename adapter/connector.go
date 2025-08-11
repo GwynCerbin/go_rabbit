@@ -11,8 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/GwynCerbin/go_rabbit/pkg/broker"
-
+	rabbit "github.com/GwynCerbin/go_rabbit"
 	"github.com/rabbitmq/amqp091-go"
 )
 
@@ -245,7 +244,7 @@ func (c *Con) DeleteQueue(name string) error {
 }
 
 // CreateConsumer returns a new broker.Consumer instance or an error ConsumerConfEmptyError if the configuration is nil.
-func (c *Con) CreateConsumer(cfg *ConsumerConfig) (broker.Consumer, error) {
+func (c *Con) CreateConsumer(cfg *ConsumerConfig) (rabbit.Consumer, error) {
 	if cfg == nil {
 		return nil, ConsumerConfEmptyError{}
 	}
@@ -254,7 +253,7 @@ func (c *Con) CreateConsumer(cfg *ConsumerConfig) (broker.Consumer, error) {
 }
 
 // CreatePublisher returns a new broker.Publisher instance or an error PublisherConfEmptyError if the configuration is nil.
-func (c *Con) CreatePublisher(cfg *PublisherConfig) (broker.Publisher, error) {
+func (c *Con) CreatePublisher(cfg *PublisherConfig) (rabbit.Publisher, error) {
 	if cfg == nil {
 		return nil, PublisherConfEmptyError{}
 	}
@@ -263,7 +262,7 @@ func (c *Con) CreatePublisher(cfg *PublisherConfig) (broker.Publisher, error) {
 }
 
 // CreatePublisherWithConfirmation returns a broker.Publisher that supports confirmation acknowledgments.
-func (c *Con) CreatePublisherWithConfirmation(cfg *PublisherConfig) (broker.Publisher, error) {
+func (c *Con) CreatePublisherWithConfirmation(cfg *PublisherConfig) (rabbit.Publisher, error) {
 	if cfg == nil {
 		return nil, PublisherConfEmptyError{}
 	}

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright © 2024–2026 Alexander Demin
 
-package infra
+package rabbit
 
 import (
 	"context"
@@ -9,8 +9,6 @@ import (
 	"log"
 	"runtime"
 	"sync"
-
-	"github.com/GwynCerbin/go_rabbit/pkg/broker"
 )
 
 // LoggerFunc is a pluggable callback for error reporting.
@@ -25,13 +23,13 @@ type LoggerFunc func(error)
 // Listener itself does not process messages; it acts as a factory that
 // creates an Instance where the real work happens.
 type Listener struct {
-	consumer   broker.Consumer
+	consumer   Consumer
 	gos        int
 	loggerFunc LoggerFunc
 }
 
 // NewListener constructs a Listener with a default parallelism level of 1.
-func NewListener(consumer broker.Consumer) *Listener {
+func NewListener(consumer Consumer) *Listener {
 	return &Listener{
 		gos:      1,
 		consumer: consumer,
@@ -69,7 +67,7 @@ type Instance struct {
 	wg         sync.WaitGroup
 	gos        int
 	router     Router
-	consumer   broker.Consumer
+	consumer   Consumer
 	loggerFunc LoggerFunc
 }
 

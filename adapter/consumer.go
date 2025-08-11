@@ -10,7 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/GwynCerbin/go_rabbit/pkg/broker"
+	rabbit "github.com/GwynCerbin/go_rabbit"
 
 	"github.com/rabbitmq/amqp091-go"
 )
@@ -67,7 +67,7 @@ func setConsumerConfig(cfg ConsumerConfig) (queue, consumer string, autoAck, exc
 
 // Consume retrieves the next broker.Message or an error ConnClosedError if the consumer or connection is closed.
 // It handles reconnection transparently using notifyChan and Con.reconnect.
-func (c *Consumer) Consume() (broker.Message, error) {
+func (c *Consumer) Consume() (rabbit.Message, error) {
 	c.con.cons.Add(1)
 	defer c.con.cons.Done()
 
@@ -85,7 +85,7 @@ func (c *Consumer) Consume() (broker.Message, error) {
 			}
 			c.jobs.Add(1)
 
-			return broker.Message(&Message{
+			return rabbit.Message(&Message{
 				deliver: val,
 				wg:      c.jobs,
 			}), nil
